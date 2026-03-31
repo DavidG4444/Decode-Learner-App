@@ -1,0 +1,139 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {uid}
+    // Fields:
+    //   - uid: string (required) - User's unique ID
+    //   - name: string (required) - Display name
+    //   - email: string (required, email format)
+    //   - role: string (required, enum: student, teacher)
+    //   - computerProficiency: string (required, enum: Basic, Intermediate, Advanced)
+    //   - totalPoints: number (required, >= 0)
+    //   - quizzesCompleted: number (required, >= 0)
+    //   - computerTopicProgress: number (optional, 0-100)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: quizHistory
+    // Document ID: auto-generated
+    // Fields:
+    //   - uid: string (required) - User ID
+    //   - topic: string (required)
+    //   - score: number (required, >= 0)
+    //   - totalQuestions: number (required, > 0)
+    //   - difficulty: string (required, enum: Beginner, Intermediate, Advanced)
+    //   - timestamp: timestamp (required)
+    //
+    // Collection: feedback
+    // Document ID: auto-generated
+    // Fields:
+    //   - teacherId: string (required)
+    //   - teacherName: string (required)
+    //   - studentId: string (required)
+    //   - content: string (required)
+    //   - suggestions: string (required)
+    //   - timestamp: timestamp (required)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.uid;
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isTeacher() {
+      return isAuthenticated() && getUserData().role == 'teacher';
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (getUserData().role == 'admin' ||
+          (request.auth.token.email == "davidgathumbi97.DG@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'name', 'email', 'role', 'computerProficiency', 'totalPoints', 'quizzesCompleted']) &&
+             data.uid == request.auth.uid &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             isValidEmail(data.email) &&
+             data.role in ['student', 'teacher'] &&
+             data.computerProficiency in ['Basic', 'Intermediate', 'Advanced'] &&
+             data.totalPoints is int && data.totalPoints >= 0 &&
+             data.quizzesCompleted is int && data.quizzesCompleted >= 0;
+    }
+
+    function isValidQuizHistory(data) {
+      return data.keys().hasAll(['uid', 'topic', 'score', 'totalQuestions', 'difficulty', 'timestamp']) &&
+             data.uid == request.auth.uid &&
+             data.topic is string && data.topic.size() > 0 && data.topic.size() < 200 &&
+             data.score is int && data.score >= 0 &&
+             data.totalQuestions is int && data.totalQuestions > 0 &&
+             data.difficulty in ['Beginner', 'Intermediate', 'Advanced'];
+    }
+
+    function isValidFeedback(data) {
+      return data.keys().hasAll(['teacherId', 'teacherName', 'studentId', 'content', 'suggestions', 'timestamp']) &&
+             data.teacherId == request.auth.uid &&
+             data.teacherName is string && data.teacherName.size() > 0 &&
+             data.studentId is string && data.studentId.size() > 0 &&
+             data.content is string && data.content.size() > 0 && data.content.size() < 5000 &&
+             data.suggestions is string && data.suggestions.size() > 0 && data.suggestions.size() < 5000;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isTeacher() || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if (isOwner(userId) && isValidUser(request.resource.data)) || isAdmin();
+    }
+
+    match /quizHistory/{historyId} {
+      allow read: if isDocOwner() || isTeacher() || isAdmin();
+      allow create: if isAuthenticated() && request.resource.data.uid == request.auth.uid && isValidQuizHistory(request.resource.data);
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /feedback/{feedbackId} {
+      allow read: if isAuthenticated() && (request.auth.uid == resource.data.studentId || request.auth.uid == resource.data.teacherId || isAdmin());
+      allow create: if isTeacher() && isValidFeedback(request.resource.data);
+      allow update: if (isTeacher() && resource.data.teacherId == request.auth.uid && isValidFeedback(request.resource.data)) || isAdmin();
+      allow delete: if (isTeacher() && resource.data.teacherId == request.auth.uid) || isAdmin();
+    }
+
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}
